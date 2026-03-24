@@ -1,0 +1,121 @@
+menu "ESP SSD1306 Driver"
+
+    # -------------------------------------------------------------------------
+    # I2C Parameters
+    # -------------------------------------------------------------------------
+
+    config ESP_SSD1306_DRIVER_I2C_ADDR
+        hex "I2C device address"
+        default 0x3C
+        range 0x3C 0x3D
+        help
+            7-bit I2C address of the SSD1306.
+            0x3C: SA0 pin low  (most modules, default).
+            0x3D: SA0 pin high (address select jumper or resistor).
+
+    config ESP_SSD1306_DRIVER_I2C_SCL_SPEED_HZ
+        int "I2C SCL clock speed (Hz)"
+        default 400000
+        range 100000 400000
+        help
+            I2C bus clock frequency. 400 000 Hz (Fast Mode) is recommended.
+            Use 100 000 Hz (Standard Mode) only if your wiring requires it.
+
+    # -------------------------------------------------------------------------
+    # Display Geometry
+    # -------------------------------------------------------------------------
+
+    config ESP_SSD1306_DRIVER_WIDTH
+        int "Display width (pixels)"
+        default 128
+        range 8 128
+        help
+            Horizontal resolution of the display in pixels.
+            Almost all SSD1306 modules are 128 pixels wide.
+
+    choice ESP_SSD1306_DRIVER_HEIGHT_CHOICE
+        prompt "Display height (pixels)"
+        default ESP_SSD1306_DRIVER_HEIGHT_64
+        help
+            Vertical resolution of the display.
+            128×64 is the most common variant; 128×32 is the 0.91-inch module.
+
+        config ESP_SSD1306_DRIVER_HEIGHT_64
+            bool "64 pixels  (128×64, 0.96-inch)"
+
+        config ESP_SSD1306_DRIVER_HEIGHT_32
+            bool "32 pixels  (128×32, 0.91-inch)"
+
+    endchoice
+
+    config ESP_SSD1306_DRIVER_HEIGHT
+        int
+        default 64 if ESP_SSD1306_DRIVER_HEIGHT_64
+        default 32 if ESP_SSD1306_DRIVER_HEIGHT_32
+
+    config ESP_SSD1306_DRIVER_COM_PIN_CFG
+        hex
+        default 0x12 if ESP_SSD1306_DRIVER_HEIGHT_64
+        default 0x02 if ESP_SSD1306_DRIVER_HEIGHT_32
+
+    # -------------------------------------------------------------------------
+    # Display Orientation
+    # -------------------------------------------------------------------------
+
+    config ESP_SSD1306_DRIVER_FLIP
+        bool "Flip display vertically (bottom-to-top orientation)"
+        default n
+        help
+            Reverses the COM scan direction and segment remap so the display
+            renders upside-down. Useful when the module is mounted inverted
+            inside an enclosure.
+
+    # -------------------------------------------------------------------------
+    # Rendering Features
+    # -------------------------------------------------------------------------
+
+    config ESP_SSD1306_DRIVER_ENABLE_FLOAT
+        bool "Enable float rendering  (buffer_float)"
+        default n
+        help
+            Renders a float with configurable decimal places using snprintf.
+            WARNING: pulls in newlib float-formatting code (~3–5 KB flash).
+            Only enable if needed.
+
+    # -------------------------------------------------------------------------
+    # Log Level
+    # -------------------------------------------------------------------------
+
+    choice ESP_SSD1306_DRIVER_LOG_LEVEL_CHOICE
+        prompt "Log level"
+        default ESP_SSD1306_DRIVER_LOG_LEVEL_INFO
+        help
+            Component log verbosity. Controls the ESP_LOGx macros inside
+            the component, independently of the global log level.
+            Set to Error in production builds to suppress Info messages.
+
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_NONE
+            bool "None"
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_ERROR
+            bool "Error"
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_WARN
+            bool "Warn"
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_INFO
+            bool "Info"
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_DEBUG
+            bool "Debug"
+        config ESP_SSD1306_DRIVER_LOG_LEVEL_VERBOSE
+            bool "Verbose"
+
+    endchoice
+
+    config ESP_SSD1306_DRIVER_LOG_LEVEL
+        int
+        default 0 if ESP_SSD1306_DRIVER_LOG_LEVEL_NONE
+        default 1 if ESP_SSD1306_DRIVER_LOG_LEVEL_ERROR
+        default 2 if ESP_SSD1306_DRIVER_LOG_LEVEL_WARN
+        default 3 if ESP_SSD1306_DRIVER_LOG_LEVEL_INFO
+        default 4 if ESP_SSD1306_DRIVER_LOG_LEVEL_DEBUG
+        default 5 if ESP_SSD1306_DRIVER_LOG_LEVEL_VERBOSE
+
+endmenu
