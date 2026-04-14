@@ -21,6 +21,14 @@ menu "ESP SSD1306 Driver"
             I2C bus clock frequency. 400 000 Hz (Fast Mode) is recommended.
             Use 100 000 Hz (Standard Mode) only if your wiring requires it.
 
+    config ESP_SSD1306_DRIVER_I2C_TIMEOUT_MS
+        int "I2C transaction timeout (ms)"
+        default 1000
+        range 10 1000
+        help
+            Timeout for I2C bus transactions and mutex wait.
+            Increase only if experiencing spurious timeouts on a loaded bus.
+
     # -------------------------------------------------------------------------
     # Display Geometry
     # -------------------------------------------------------------------------
