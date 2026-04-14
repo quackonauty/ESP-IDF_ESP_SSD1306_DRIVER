@@ -1,0 +1,30 @@
+version: "2.0.0"
+
+description: "Lightweight and thread-safe SSD1306 OLED display driver for ESP-IDF. Features dirty-page tracking, partial updates, and full rendering API over I2C."
+
+url: "https://github.com/quackonauty/ESP-IDF_ESP_SSD1306_DRIVER"
+
+issues: "https://github.com/quackonauty/ESP-IDF_ESP_SSD1306_DRIVER/issues"
+
+license: "Apache-2.0"
+
+targets:
+  - esp32
+  - esp32s3
+  - esp32c2
+  - esp32c3
+  - esp32c5
+  - esp32c6
+  - esp32c61
+  - esp32h2
+
+tags:
+  - display
+  - oled
+  - ssd1306
+  - i2c
+  - driver
+
+dependencies:
+  idf:
+    version: ">=6.0.0"

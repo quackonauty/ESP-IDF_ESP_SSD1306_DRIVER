@@ -9,18 +9,12 @@
 
 #include <esp_log.h>
 
-static const char *TAG = "ESP_SSD1306_DRIVER";
+static const char *const TAG = "ESP_SSD1306_DRIVER";
 
 /* =========================================================================
  * Internal helpers
  * ====================================================================== */
 
-/**
- * @brief Compute the page bitmask that covers pixel rows [y1 … y2].
- *
- * Bit N in the returned mask is set if page N contains at least one row in
- * the range. Used by buffer-write functions to mark the correct pages dirty.
- */
 static inline uint8_t ssd1306_page_mask_for_rows(uint8_t y1, uint8_t y2)
 {
     uint8_t mask = 0;
@@ -33,35 +27,20 @@ static inline uint8_t ssd1306_page_mask_for_rows(uint8_t y1, uint8_t y2)
     return mask;
 }
 
-/**
- * @brief Atomically mark one or more pages as dirty.
- *
- * Uses a relaxed atomic OR so no bit-set from a concurrent task is lost.
- */
 static inline void ssd1306_mark_dirty(i2c_ssd1306_handle_t *h, uint8_t page_mask)
 {
     atomic_fetch_or_explicit(&h->dirty_pages, page_mask, memory_order_relaxed);
 }
 
-/**
- * @brief Transmit a buffer over I2C without acquiring the mutex.
- *
- * The caller must hold h->mutex before calling this function.
- */
+/* Caller must hold h->mutex. */
 static esp_err_t ssd1306_raw_transmit(i2c_ssd1306_handle_t *h, const uint8_t *data, size_t len)
 {
-    TickType_t ticks = pdMS_TO_TICKS(ESP_SSD1306_DRIVER_TIMEOUT_MS);
-    return i2c_master_transmit(h->i2c_master_dev, data, len, ticks);
+    return i2c_master_transmit(h->i2c_master_dev, data, len, pdMS_TO_TICKS(CONFIG_ESP_SSD1306_DRIVER_I2C_TIMEOUT_MS));
 }
 
-/**
- * @brief Take the mutex, send a single buffer, release the mutex.
- *
- * Used for one-shot transmissions such as the init sequence.
- */
 static esp_err_t ssd1306_locked_transmit(i2c_ssd1306_handle_t *h, const uint8_t *data, size_t len)
 {
-    if (xSemaphoreTake(h->mutex, pdMS_TO_TICKS(ESP_SSD1306_DRIVER_TIMEOUT_MS)) != pdTRUE)
+    if (xSemaphoreTake(h->mutex, pdMS_TO_TICKS(CONFIG_ESP_SSD1306_DRIVER_I2C_TIMEOUT_MS)) != pdTRUE)
     {
         ESP_LOGE(TAG, "Mutex timeout");
         return ESP_ERR_TIMEOUT;
@@ -71,19 +50,13 @@ static esp_err_t ssd1306_locked_transmit(i2c_ssd1306_handle_t *h, const uint8_t 
     return ret;
 }
 
-/**
- * @brief Take the mutex, send two buffers in sequence, release the mutex.
- *
- * Used for address-command + data pairs so no other task can insert an I2C
- * transaction between the page-address command and the pixel data.
- *
- * Without this, a concurrent task calling page_to_ram on a different page
- * could interleave its address command between this function's address and
- * data commands, sending data to the wrong page on the display.
+/*
+ * Sends cmd and data in one mutex-protected sequence, preventing concurrent
+ * page_to_ram calls from interleaving their address and data commands.
  */
 static esp_err_t ssd1306_locked_transmit_pair(i2c_ssd1306_handle_t *h, const uint8_t *cmd, size_t cmd_len, const uint8_t *data, size_t data_len)
 {
-    if (xSemaphoreTake(h->mutex, pdMS_TO_TICKS(ESP_SSD1306_DRIVER_TIMEOUT_MS)) != pdTRUE)
+    if (xSemaphoreTake(h->mutex, pdMS_TO_TICKS(CONFIG_ESP_SSD1306_DRIVER_I2C_TIMEOUT_MS)) != pdTRUE)
     {
         ESP_LOGE(TAG, "Mutex timeout");
         return ESP_ERR_TIMEOUT;
@@ -95,23 +68,10 @@ static esp_err_t ssd1306_locked_transmit_pair(i2c_ssd1306_handle_t *h, const uin
     return ret;
 }
 
-/**
- * @brief Shared implementation for buffer_printf and buffer_printf_overwrite.
- *
- * Expands @p fmt into a stack buffer of ESP_SSD1306_DRIVER_PRINTF_BUF_SIZE
- * bytes using the provided @p args, then delegates to either
- * i2c_ssd1306_buffer_text() or i2c_ssd1306_buffer_text_overwrite() depending
- * on @p overwrite. Output that exceeds the buffer is silently truncated.
- *
- * @note @p args must be initialized with va_start() by the caller and cleaned
- *       up with va_end() after this function returns. va_start/va_end must
- *       always remain in the same function that declares the va_list.
- */
 static esp_err_t ssd1306_printf_impl(i2c_ssd1306_handle_t *handle, uint8_t x, uint8_t y, bool invert, bool overwrite, const char *fmt, va_list args)
 {
     char text[ESP_SSD1306_DRIVER_PRINTF_BUF_SIZE];
     vsnprintf(text, sizeof(text), fmt, args);
-
     return overwrite ? i2c_ssd1306_buffer_text_overwrite(handle, x, y, text, invert) : i2c_ssd1306_buffer_text(handle, x, y, text, invert);
 }
 
@@ -130,7 +90,7 @@ esp_err_t i2c_ssd1306_init(i2c_master_bus_handle_t bus, i2c_ssd1306_handle_t *ha
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t ret = i2c_master_probe(bus, CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR, ESP_SSD1306_DRIVER_TIMEOUT_MS / portTICK_PERIOD_MS);
+    esp_err_t ret = i2c_master_probe(bus, CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR, CONFIG_ESP_SSD1306_DRIVER_I2C_TIMEOUT_MS / portTICK_PERIOD_MS);
     if (ret != ESP_OK)
     {
         switch (ret)
@@ -138,8 +98,12 @@ esp_err_t i2c_ssd1306_init(i2c_master_bus_handle_t bus, i2c_ssd1306_handle_t *ha
         case ESP_ERR_NOT_FOUND:
             ESP_LOGE(TAG, "No device at I2C address 0x%02X", (unsigned)CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR);
             break;
+        case ESP_ERR_INVALID_RESPONSE:
+            /* v6.0+: NACK is reported as ESP_ERR_INVALID_RESPONSE */
+            ESP_LOGE(TAG, "NACK probing I2C address 0x%02X", (unsigned)CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR);
+            break;
         case ESP_ERR_TIMEOUT:
-            ESP_LOGE(TAG, "I2C timeout probing address 0x%02X", (unsigned)CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR);
+            ESP_LOGE(TAG, "Timeout probing I2C address 0x%02X", (unsigned)CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR);
             break;
         default:
             ESP_LOGE(TAG, "I2C probe error at 0x%02X (0x%x)", (unsigned)CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR, ret);
@@ -149,7 +113,7 @@ esp_err_t i2c_ssd1306_init(i2c_master_bus_handle_t bus, i2c_ssd1306_handle_t *ha
     }
 
     i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_7,
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = CONFIG_ESP_SSD1306_DRIVER_I2C_ADDR,
         .scl_speed_hz = CONFIG_ESP_SSD1306_DRIVER_I2C_SCL_SPEED_HZ,
     };
@@ -206,6 +170,7 @@ esp_err_t i2c_ssd1306_init(i2c_master_bus_handle_t bus, i2c_ssd1306_handle_t *ha
 
 cleanup_device:
     i2c_master_bus_rm_device(handle->i2c_master_dev);
+    handle->i2c_master_dev = NULL;
 cleanup_mutex:
     vSemaphoreDelete(handle->mutex);
     handle->mutex = NULL;
@@ -222,6 +187,7 @@ esp_err_t i2c_ssd1306_deinit(i2c_ssd1306_handle_t *handle)
         ESP_LOGE(TAG, "Failed to remove I2C device (0x%x)", ret);
         return ret;
     }
+    handle->i2c_master_dev = NULL;
 
     if (handle->mutex != NULL)
     {
@@ -252,7 +218,6 @@ esp_err_t i2c_ssd1306_clear(i2c_ssd1306_handle_t *handle)
 esp_err_t i2c_ssd1306_buffer_fill(i2c_ssd1306_handle_t *handle, bool fill)
 {
     memset(handle->buffer, fill ? 0xFF : 0x00, ESP_SSD1306_DRIVER_BUF_SIZE);
-
     uint8_t all_pages = (uint8_t)((1u << ESP_SSD1306_DRIVER_TOTAL_PAGES) - 1u);
     atomic_store_explicit(&handle->dirty_pages, all_pages, memory_order_relaxed);
     return ESP_OK;
@@ -330,13 +295,11 @@ esp_err_t i2c_ssd1306_buffer_text(i2c_ssd1306_handle_t *handle, uint8_t x, uint8
         ESP_LOGE(TAG, "text is NULL");
         return ESP_ERR_INVALID_ARG;
     }
-
     if (text[0] == '\0')
     {
         ESP_LOGW(TAG, "text is empty, nothing to render");
         return ESP_ERR_INVALID_ARG;
     }
-
     if (x >= CONFIG_ESP_SSD1306_DRIVER_WIDTH || y >= CONFIG_ESP_SSD1306_DRIVER_HEIGHT)
     {
         ESP_LOGE(TAG, "Invalid text position: x=%u (max %u), y=%u (max %u)", x, CONFIG_ESP_SSD1306_DRIVER_WIDTH - 1u, y, CONFIG_ESP_SSD1306_DRIVER_HEIGHT - 1u);
@@ -347,10 +310,16 @@ esp_err_t i2c_ssd1306_buffer_text(i2c_ssd1306_handle_t *handle, uint8_t x, uint8
     uint8_t offset = y % 8u;
     bool has_next = (page + 1u) < ESP_SSD1306_DRIVER_TOTAL_PAGES;
 
+    /*
+     * text_len is evaluated unconditionally so that the compiler cannot
+     * eliminate the expression as dead code when WARN logging is disabled,
+     * which would leave text_len unused and trigger -Wunused-variable.
+     */
     size_t text_len = strlen(text);
-    uint8_t chars_visible = (CONFIG_ESP_SSD1306_DRIVER_WIDTH - x) / 8u;
     if ((x + (uint16_t)text_len * 8u) > CONFIG_ESP_SSD1306_DRIVER_WIDTH)
-        ESP_LOGW(TAG, "Text truncated: %u of %u chars visible", chars_visible, (uint8_t)text_len);
+    {
+        ESP_LOGW(TAG, "Text truncated: %u of %u chars visible", (uint8_t)((CONFIG_ESP_SSD1306_DRIVER_WIDTH - x) / 8u), (uint8_t)text_len);
+    }
 
     if (offset != 0u && !has_next)
         ESP_LOGW(TAG, "Text vertically truncated: y=%u causes overflow", y);
@@ -435,7 +404,6 @@ esp_err_t i2c_ssd1306_buffer_float(i2c_ssd1306_handle_t *handle, uint8_t x, uint
         ESP_LOGW(TAG, "decimals=%u clamped to 6", decimals);
         decimals = 6;
     }
-
     char text[32];
     snprintf(text, sizeof(text), "%.*f", (int)decimals, value);
     return i2c_ssd1306_buffer_text(handle, x, y, text, invert);
@@ -448,7 +416,6 @@ esp_err_t i2c_ssd1306_buffer_float_overwrite(i2c_ssd1306_handle_t *handle, uint8
         ESP_LOGW(TAG, "decimals=%u clamped to 6", decimals);
         decimals = 6;
     }
-
     char text[32];
     snprintf(text, sizeof(text), "%.*f", (int)decimals, value);
     return i2c_ssd1306_buffer_text_overwrite(handle, x, y, text, invert);
@@ -462,7 +429,6 @@ esp_err_t i2c_ssd1306_buffer_printf(i2c_ssd1306_handle_t *handle, uint8_t x, uin
         ESP_LOGE(TAG, "NULL format string");
         return ESP_ERR_INVALID_ARG;
     }
-
     va_list args;
     va_start(args, fmt);
     esp_err_t ret = ssd1306_printf_impl(handle, x, y, invert, false, fmt, args);
@@ -477,7 +443,6 @@ esp_err_t i2c_ssd1306_buffer_printf_overwrite(i2c_ssd1306_handle_t *handle, uint
         ESP_LOGE(TAG, "NULL format string");
         return ESP_ERR_INVALID_ARG;
     }
-
     va_list args;
     va_start(args, fmt);
     esp_err_t ret = ssd1306_printf_impl(handle, x, y, invert, true, fmt, args);
@@ -492,13 +457,11 @@ esp_err_t i2c_ssd1306_buffer_image(i2c_ssd1306_handle_t *handle, uint8_t x, uint
         ESP_LOGE(TAG, "image is NULL");
         return ESP_ERR_INVALID_ARG;
     }
-
     if (img_width == 0u || img_height == 0u)
     {
         ESP_LOGE(TAG, "Invalid image dimensions: %ux%u", img_width, img_height);
         return ESP_ERR_INVALID_ARG;
     }
-
     if (x >= CONFIG_ESP_SSD1306_DRIVER_WIDTH || y >= CONFIG_ESP_SSD1306_DRIVER_HEIGHT)
     {
         ESP_LOGE(TAG, "Image position out of range: x=%u (max %u), y=%u (max %u)", x, CONFIG_ESP_SSD1306_DRIVER_WIDTH - 1u, y, CONFIG_ESP_SSD1306_DRIVER_HEIGHT - 1u);
@@ -509,7 +472,7 @@ esp_err_t i2c_ssd1306_buffer_image(i2c_ssd1306_handle_t *handle, uint8_t x, uint
     uint8_t draw_h = (img_height < (CONFIG_ESP_SSD1306_DRIVER_HEIGHT - y)) ? img_height : (uint8_t)(CONFIG_ESP_SSD1306_DRIVER_HEIGHT - y);
 
     if (img_width > draw_w)
-        ESP_LOGW(TAG, "Image horizontally clipped: %u of %u columns visible", draw_w, img_width);
+        ESP_LOGW(TAG, "Image horizontally clipped: %u of %u cols visible", draw_w, img_width);
     if (img_height > draw_h)
         ESP_LOGW(TAG, "Image vertically clipped: %u of %u rows visible", draw_h, img_height);
 
@@ -575,10 +538,7 @@ esp_err_t i2c_ssd1306_segment_to_ram(i2c_ssd1306_handle_t *handle, uint8_t page,
     atomic_fetch_and_explicit(&handle->dirty_pages, (uint8_t)~(1u << page), memory_order_relaxed);
 
     uint16_t index = (uint16_t)page * CONFIG_ESP_SSD1306_DRIVER_WIDTH + segment;
-    const uint8_t data_cmd[] = {
-        OLED_CONTROL_BYTE_DATA,
-        handle->buffer[index],
-    };
+    const uint8_t data_cmd[] = {OLED_CONTROL_BYTE_DATA, handle->buffer[index]};
 
     esp_err_t err = ssd1306_locked_transmit_pair(handle, addr_cmd, sizeof(addr_cmd), data_cmd, sizeof(data_cmd));
     if (err != ESP_OK)

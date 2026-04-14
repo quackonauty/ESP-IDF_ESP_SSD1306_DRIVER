@@ -3,15 +3,17 @@
 | Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C5 | ESP32-C6 | ESP32-C61 | ESP32-H2 | ESP32-S3 |
 | ----------------- | ----- | -------- | -------- | -------- | -------- | --------- | -------- | -------- |
 
-![Version](https://img.shields.io/badge/version-1.0.0-orange)
+![Version](https://img.shields.io/badge/version-2.0.0-orange)
 
 A lightweight and efficient SSD1306 OLED display driver written entirely in C for the ESP-IDF framework. Provides clean, thread-safe control of SSD1306-based OLED displays over I2C with full dirty-page tracking, partial update support, and a complete rendering API.
+
+Version 2.0.0 was updated to fully support **ESP-IDF v6.0** while maintaining backward compatibility with v5.1+.
 
 ---
 
 ## Requirements
 
-- **ESP-IDF**: v5.0+
+- **ESP-IDF**: v5.1+ (v6.0 recommended)
 
 ---
 
@@ -44,7 +46,7 @@ buffer_to_ram / region_to_ram / page_to_ram
 - `_Atomic dirty_pages` bitmask lets any task or ISR mark pages without a mutex, while flush functions handle per-page TOCTOU correctly.
 - The driver mutex serialises I2C transactions only. If multiple tasks draw and flush concurrently, protect the full draw-then-flush sequence with an application-level mutex.
 - `printf` buffer size is derived from display width at compile time — `(WIDTH / 8) * 2 + 1` — no manual configuration needed.
-- Only `buffer_float` is behind a Kconfig guard, because it is the only function that may pull in newlib's float-printf support (~3–5 KB flash) if not already present. All other functions (`buffer_int`, `buffer_printf`, `buffer_image`) are always compiled since their dependencies are already present via `ESP_LOG`.
+- Only `buffer_float` is behind a Kconfig guard, because it is the only function that may pull in C library float-printf support (~3–5 KB flash) if not already present. All other functions (`buffer_int`, `buffer_printf`, `buffer_image`) are always compiled since their dependencies are already present via `ESP_LOG`. On ESP-IDF v6.0 the default C library is Picolibc; on v5.x it is Newlib.
 
 ---
 
@@ -53,7 +55,7 @@ buffer_to_ram / region_to_ram / page_to_ram
 ### Step 1: Add Component
 
 ```bash
-idf.py add-dependency --git https://github.com/quackonauty/ESP-IDF_ESP_SSD1306_DRIVER.git --git-ref 1.0.0 qck_esp_ssd1306_driver
+idf.py add-dependency --git https://github.com/quackonauty/ESP-IDF_ESP_SSD1306_DRIVER.git --git-ref 2.0.0 qck_esp_ssd1306_driver
 ```
 
 Or in `main/idf_component.yml`:
@@ -62,7 +64,7 @@ Or in `main/idf_component.yml`:
 dependencies:
   qck_esp_ssd1306_driver:
     git: https://github.com/quackonauty/ESP-IDF_ESP_SSD1306_DRIVER.git
-    version: 1.0.0
+    version: 2.0.0
 ```
 
 Then:
@@ -90,6 +92,7 @@ Navigate to: **Component config → ESP SSD1306 Driver**
 |--------|---------|-------------|
 | I2C device address | 0x3C | 0x3C (SA0 low) or 0x3D (SA0 high) |
 | I2C SCL clock speed (Hz) | 400000 | 100000–400000 |
+| I2C transaction timeout (ms) | 1000 | 10–1000 — increase only on loaded buses |
 | Display width (pixels) | 128 | Horizontal resolution |
 | Display height | 64 px | Choose 64 or 32 px |
 | Flip display vertically | No | Useful when module is mounted inverted |
@@ -158,6 +161,12 @@ xSemaphoreGive(oled_mutex);
 | `i2c_ssd1306_init(bus, handle)` | Initialize display — probes I2C, sends init sequence, zeroes buffer |
 | `i2c_ssd1306_deinit(handle)` | Remove I2C device and delete mutex |
 
+### Convenience
+
+| Function | Description |
+|----------|-------------|
+| `i2c_ssd1306_clear(handle)` | All pixels off and flush to hardware — equivalent to `buffer_fill(false)` + `buffer_to_ram()` |
+
 ---
 
 ### Buffer Manipulation
@@ -190,7 +199,7 @@ These functions modify the pixel buffer in RAM and mark affected pages dirty. **
 
 #### Float
 
-> Compiled only when **Enable `buffer_float`** is set in Kconfig. Enabling it may pull in newlib's float-printf support (~3–5 KB flash) if not already present.
+> Compiled only when **Enable `buffer_float`** is set in Kconfig. Enabling it may pull in C library float-printf support (~3–5 KB flash) if not already present (Picolibc on ESP-IDF v6.0, Newlib on v5.x).
 
 | Function | Description |
 |----------|-------------|
@@ -260,7 +269,6 @@ Defined in `esp_ssd1306_driver.h`. Derived from Kconfig — do not set manually.
 |----------|---------|-------------|
 | `ESP_SSD1306_DRIVER_TOTAL_PAGES` | `HEIGHT / 8` | Number of pages |
 | `ESP_SSD1306_DRIVER_BUF_SIZE` | `WIDTH * TOTAL_PAGES` | Pixel buffer size in bytes |
-| `ESP_SSD1306_DRIVER_TIMEOUT_MS` | `1000` | I2C operation timeout |
 | `ESP_SSD1306_DRIVER_PRINTF_BUF_SIZE` | `(WIDTH / 8) * 2 + 1` | Stack buffer for `buffer_printf` |
 
 ---
@@ -426,6 +434,14 @@ print(c_array)
 
 ## Changelog
 
+### 2.0.0 — ESP-IDF v6.0 compatibility
+
+- **CMakeLists.txt**: Changed `PRIV_REQUIRES` from the umbrella `driver` component to `esp_driver_i2c`. In ESP-IDF v6.0 the `driver` component no longer pulls in I2C transitively, so the explicit dependency is required. This also works on v5.1+.
+- **`i2c_ssd1306_init`**: Added `ESP_ERR_INVALID_RESPONSE` case to the probe error switch. ESP-IDF v6.0 changed the I2C master driver to return `ESP_ERR_INVALID_RESPONSE` (instead of `ESP_ERR_NOT_FOUND`) when a NACK is received on the bus.
+- **`i2c_ssd1306_buffer_text`**: Eliminated the `chars_visible` intermediate variable. It was only referenced inside an `ESP_LOGW` call, which could trigger `-Wunused-variable` at higher optimisation levels under ESP-IDF v6.0's new default of warnings-as-errors. The value is now computed inline within the conditional log call.
+- **`idf_component.yml`**: Minimum IDF version bumped from `>=5.0.0` to `>=5.1.0`, which is when the new `i2c_master.h` API and `esp_driver_i2c` component were introduced.
+- Version bumped to `2.0.0`.
+
 ### 1.0.0
 
 Initial release.
@@ -436,7 +452,7 @@ Initial release.
 - Thread-safe I2C transfers via FreeRTOS mutex — safe to call from multiple tasks.
 - `_overwrite` variants for all text/int/float/printf functions — clean line updates without a full screen clear.
 - `printf` buffer size derived automatically from display width — no manual configuration needed.
-- Only `buffer_float` is behind a Kconfig guard — it is the only function that may pull in newlib's float-printf support (~3–5 KB flash) if not already present elsewhere in the project.
+- Only `buffer_float` is behind a Kconfig guard — it is the only function that may pull in C library float-printf support (~3–5 KB flash) if not already present elsewhere in the project.
 - Partial flush functions: `region_to_ram`, `page_to_ram`, `pages_to_ram`, `segment_to_ram`, `segments_to_ram`.
 
 ---
@@ -453,7 +469,9 @@ Initial release.
 
 **`buffer_float` undefined**: Enable **Enable `buffer_float`** in Kconfig (`idf.py menuconfig` → Component config → ESP SSD1306 Driver).
 
-**I2C timeout**: Increase `ESP_SSD1306_DRIVER_TIMEOUT_MS` in `esp_ssd1306_driver.h` or reduce SCL speed in Kconfig.
+**I2C timeout**: Increase **I2C transaction timeout** in menuconfig (Component config → ESP SSD1306 Driver) or reduce SCL speed.
+
+**Build error: `esp_driver_i2c` not found**: This component requires ESP-IDF v5.1 or later. The `esp_driver_i2c` component was introduced in v5.1 alongside the new `i2c_master.h` API.
 
 ---
 
